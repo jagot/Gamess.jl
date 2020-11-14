@@ -218,6 +218,48 @@ end
 
 # * CIS
 
+function read_cis_dipoles(io::IO)
+    left = Vector{Int}()
+    right = Vector{Int}()
+    x = Vector{Float64}()
+    y = Vector{Float64}()
+    z = Vector{Float64}()
+    f = Vector{Float64}()
+    A = Vector{Float64}()
+    B = Vector{Float64}()
+
+    read_until(io, "CIS TRANSITION DIPOLE MOMENTS AND")
+    read_until(io, "-CIS- LAGRANGIAN") do l
+        if occursin("TRANSITION FROM THE GROUND STATE TO EXCITED STATE", l)
+            if !occursin("OPTICALLY INACTIVE", l)
+                push!(left, 0)
+                push!(right, parse(Int, l[51:end]))
+            end
+        elseif occursin("TRANSITION BETWEEN EXCITED STATES", l)
+            if !occursin("OPTICALLY INACTIVE", l)
+                le,ri = split(l[35:end], "AND")
+                push!(left, parse(Int, le))
+                push!(right, parse(Int, ri))
+            end
+        elseif occursin(r"TRANSITION DIPOLE =", l) && occursin(r"E\*BOHR", l)
+            values = read_dipole(l)
+            push!(x, values[1])
+            push!(y, values[2])
+            push!(z, values[3])
+        elseif occursin("OSCILLATOR STRENGTH", l)
+            push!(f, parse(Float64, strip(split(l, "=")[2])))
+        elseif occursin("EINSTEIN COEFFICIENTS", l)
+            values = read_einstein(l)
+            push!(A, values[1])
+            push!(B, values[2])
+        end
+    end
+
+    DataFrame(left=left, right=right,
+              x=x, y=y, z=z,
+              f=f, A=A, B=B)
+end
+
 function read_cis(io::IO)
     read_until(io, "CI-SINGLES EXCITATION ENERGIES")
     readline(io)
@@ -232,8 +274,10 @@ function read_cis(io::IO)
         push!(energies, parse(Float64, energy))
     end
 
+    length_gauge_dipole = read_cis_dipoles(io)
+
     (excited_states=DataFrame(State = labels, Energy = energies),
-     length_gauge_dipole=nothing)
+     length_gauge_dipole=length_gauge_dipole)
 end
 
 # * GUGA
