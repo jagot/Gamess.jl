@@ -221,6 +221,8 @@ end
 function read_cis_dipoles(io::IO)
     left = Vector{Int}()
     right = Vector{Int}()
+    g_left = Vector{Int}()
+    g_right = Vector{Int}()
     x = Vector{Float64}()
     y = Vector{Float64}()
     z = Vector{Float64}()
@@ -241,6 +243,10 @@ function read_cis_dipoles(io::IO)
                 push!(left, parse(Int, le))
                 push!(right, parse(Int, ri))
             end
+        elseif occursin("STATE MULTIPLICITIES", l)
+            g_l,g_r = split(strip(split(l, "=")[2]))
+            push!(g_left, parse(Int, g_l))
+            push!(g_right, parse(Int, g_r))
         elseif occursin(r"TRANSITION DIPOLE =", l) && occursin(r"E\*BOHR", l)
             values = read_dipole(l)
             push!(x, values[1])
@@ -256,6 +262,7 @@ function read_cis_dipoles(io::IO)
     end
 
     DataFrame(left=left, right=right,
+              g_left=g_left, g_right=g_right,
               x=x, y=y, z=z,
               f=f, A=A, B=B)
 end
@@ -321,6 +328,8 @@ end
 function read_guga_dipoles(io::IO, stop)
     left = Vector{Int}()
     right = Vector{Int}()
+    g_left = Vector{Int}()
+    g_right = Vector{Int}()
     x = Vector{Float64}()
     y = Vector{Float64}()
     z = Vector{Float64}()
@@ -332,10 +341,13 @@ function read_guga_dipoles(io::IO, stop)
 
     read_until(io, stop) do l
         if occursin("CI STATE NUMBER=", l)
-            l,r = parse.(Int, split(split(l, "=", limit=2)[2])[1:2])
-            if l ≠ r
-                push!(left, l)
-                push!(right, r)
+            le,ri = parse.(Int, split(split(l, "=", limit=2)[2])[1:2])
+            if le ≠ ri
+                push!(left, le)
+                push!(right, ri)
+                g_l,g_r = parse.(Int, split(rsplit(l, "=", limit=2)[2])[1:2])
+                push!(g_left, g_l)
+                push!(g_right, g_r)
                 same = false
             else
                 same = true
@@ -362,6 +374,7 @@ function read_guga_dipoles(io::IO, stop)
     end
 
     df = DataFrame(left=left, right=right,
+                   g_left=g_left, g_right=g_right,
                    x=x, y=y, z=z,
                    f=f)
     # No Einstein coefficients in the velocity form listing
