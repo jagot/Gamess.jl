@@ -1,0 +1,3 @@
+[deps]
+Documenter = "e30172f5-a6a5-5a46-863b-614d45cd2de4"
+Gamess = "529696b1-8e09-48fc-adc2-b2323c86ff90"
