@@ -8,14 +8,19 @@ using DataFrames
 using LinearAlgebra
 
 function read_until(fun::Function, io::IO, pred::Function)
+    l = ""
     while !eof(io)
         l = readline(io)
         pred(l) && break
         fun(l)
     end
+    l
 end
 
-read_until(io::IO, pred::Function) =
+read_until(fun::Function, io::IO, s::String) =
+    read_until(fun, io, l -> occursin(s, l))
+
+read_until(io::IO, pred) =
     read_until(l -> nothing, io, pred)
 
 # * Input
@@ -35,7 +40,7 @@ end
 
 function read_input(io::IO)
     input = Vector{String}()
-    read_until(io, l -> occursin("ECHO OF THE FIRST FEW INPUT CARDS", l))
+    read_until(io, "ECHO OF THE FIRST FEW INPUT CARDS")
     read_until(io, l -> !occursin("INPUT CARD>", l)) do l
         l = lstrip(l[13:end])
         length(l) > 0 && first(l) == '!' && return
@@ -46,7 +51,7 @@ function read_input(io::IO)
 end
 
 function find_title(io::IO)
-    read_until(io, l -> occursin("RUN TITLE", l))
+    read_until(io, "RUN TITLE")
     eof(io) && return
     readline(io)
     strip(readline(io))
@@ -119,7 +124,7 @@ end
 function read_molecule(io::IO)
     point_group = nothing
     principal_axis_order = 0
-    read_until(io, l -> occursin("ATOMIC", l)) do l
+    read_until(io, "ATOMIC") do l
         if occursin("POINT GROUP", l)
             point_group=last(rsplit(l, limit=2))
         elseif occursin("PRINCIPAL", l)
@@ -214,7 +219,7 @@ end
 # * CIS
 
 function read_cis(io::IO)
-    read_until(io, l -> occursin("CI-SINGLES EXCITATION ENERGIES", l))
+    read_until(io, "CI-SINGLES EXCITATION ENERGIES")
     readline(io)
     readline(io)
 
@@ -281,7 +286,7 @@ function read_guga_dipoles(io::IO, stop)
 
     same = false
 
-    read_until(io, l -> occursin(stop, l)) do l
+    read_until(io, stop) do l
         if occursin("CI STATE NUMBER=", l)
             l,r = parse.(Int, split(split(l, "=", limit=2)[2])[1:2])
             if l ≠ r
@@ -320,7 +325,7 @@ function read_guga_dipoles(io::IO, stop)
 end
 
 function read_guga(io::IO)
-    read_until(io, l -> occursin("NON-ABELIAN CI WAVEFUNCTION STATE SYMMETRY DRIVER", l))
+    read_until(io, "NON-ABELIAN CI WAVEFUNCTION STATE SYMMETRY DRIVER")
     for _ = 1:4
         readline(io)
     end
@@ -329,7 +334,7 @@ function read_guga(io::IO)
     states = Vector{Int}()
     energies = Vector{Float64}()
 
-    read_until(io, l -> occursin("END OF CI-MATRIX DIAGONALIZATION", l)) do l
+    read_until(io, "END OF CI-MATRIX DIAGONALIZATION") do l
         if occursin("STATE #", l)
             state, energy = read_guga_state(l)
             push!(states, state)
@@ -337,13 +342,28 @@ function read_guga(io::IO)
         end
     end
 
-    read_until(io, l -> occursin("LENGTH FORM", l))
+    read_until(io, "LENGTH FORM")
     length_gauge_dipole = read_guga_dipoles(io, "VELOCITY FORM")
     velocity_gauge_dipole = read_guga_dipoles(io, "DONE WITH TRANSITION MOMENT")
 
     (excited_states=DataFrame(State = states, Energy = energies),
      length_gauge_dipole=length_gauge_dipole,
      velocity_gauge_dipole=velocity_gauge_dipole)
+end
+
+# * Energies
+
+function read_energies(io::IO)
+    read_until(io, "ENERGY COMPONENTS")
+    values = Vector{Pair{Symbol,Float64}}()
+    l = read_until(io, "VIRIAL RATIO") do l
+        if occursin("=", l)
+            label, value = split(l, "=")
+            push!(values, Symbol(replace(replace(strip(lowercase(label)), " " => "_"), "-" => "_")) => parse(Float64, value))
+        end
+    end
+    push!(values, :virial_ratio => parse(Float64, split(l, "=")[2]))
+    (; values...)
 end
 
 # * Interface
@@ -368,6 +388,10 @@ function load(io::IO)
     data = (title=title,
             input=input,
             molecule=molecule)
+
+    if lowercase(input.CONTRL.SCFTYP) ≠ "none"
+        data = merge(data, (energies=read_energies(io),))
+    end
 
     if :CITYP in keys(input.CONTRL)
         data = merge(data, (ci=read_ci(io, input.CONTRL.CITYP),))
