@@ -7,6 +7,12 @@ const re = Automa.RegExp
 using DataFrames
 using LinearAlgebra
 
+# https://physics.nist.gov/cgi-bin/cuu/Value?auedm
+const ea₀ = 8.4783536255e-30 # e*Bohr
+# https://en.wikipedia.org/wiki/Debye
+const Debye = 1e-21/299792458 # C*m
+const Debye_au = Debye/ea₀
+
 function read_until(fun::Function, io::IO, pred::Function)
     l = ""
     while !eof(io)
@@ -162,8 +168,8 @@ dipole_machine = let
                     float, re" +",
                     float, re" +",
                     float, re" +",
-                    float, re" +",
-                    re"E.BOHR")
+                    re.opt(re.cat(float, re" +")),
+                    re"[A-Z*/]+")
 
     Automa.compile(dipole)
 end
@@ -263,7 +269,7 @@ context = Automa.CodeGenContext()
     state, values[1], values[2]
 end
 
-function read_cis_dipoles(io::IO)
+function read_cis_dipoles(io::IO, gst_mult)
     left = Vector{Int}()
     right = Vector{Int}()
     g_left = Vector{Int}()
@@ -288,6 +294,18 @@ function read_cis_dipoles(io::IO)
                 push!(left, parse(Int, le))
                 push!(right, parse(Int, ri))
             end
+        elseif occursin("GROUND STATE (SCF) DIPOLE", l) && occursin(r"DEBYE", l)
+            push!(left, 0)
+            push!(right, 0)
+            push!(g_left, gst_mult)
+            push!(g_right, gst_mult)
+            values = read_dipole(l)
+            push!(x, values[1]*Debye_au)
+            push!(y, values[2]*Debye_au)
+            push!(z, values[3]*Debye_au)
+            push!(f, 0)
+            push!(A, 0)
+            push!(B, 0)
         elseif occursin("EXPECTATION VALUE DIPOLE MOMENT FOR EXCITED STATE", l)
             le = parse(Int, l[51:end])
             push!(left, le)
@@ -328,7 +346,7 @@ function read_cis_dipoles(io::IO)
               f=f, A=A, B=B)
 end
 
-function read_cis(io::IO)
+function read_cis(io::IO, gst_mult)
     states = Vector{String}()
     energies = Vector{Float64}()
     Ss = Vector{Float64}()
@@ -342,7 +360,7 @@ function read_cis(io::IO)
         end
     end
 
-    length_gauge_dipole = read_cis_dipoles(io)
+    length_gauge_dipole = read_cis_dipoles(io, gst_mult)
 
     (excited_states=DataFrame(State = states, Energy = energies, S=Ss),
      length_gauge_dipole=length_gauge_dipole)
@@ -486,9 +504,11 @@ end
 
 # * Interface
 
-function read_ci(io::IO, ci_type)
+function read_ci(io::IO, CONTRL)
+    ci_type = CONTRL.CITYP
     if ci_type == "CIS"
-        read_cis(io)
+        mult = :MULT in keys(CONTRL) ? parse(Int, CONTRL.MULT) : 1
+        read_cis(io, mult)
     elseif ci_type == "GUGA"
         read_guga(io)
     else
@@ -512,7 +532,7 @@ function load(io::IO)
     end
 
     if :CITYP in keys(input.CONTRL)
-        data = merge(data, (ci=read_ci(io, input.CONTRL.CITYP),))
+        data = merge(data, (ci=read_ci(io, input.CONTRL),))
     end
 
     data
