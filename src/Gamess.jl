@@ -188,8 +188,6 @@ end
 
 # * Einstein coefficients
 
-# EINSTEIN COEFFICIENTS: A=  2.9818E-18 1/SEC; B=  1.4009E-19 SEC/G
-
 einstein_machine = let
     einstein = re.cat(re".+", re"EINSTEIN COEFFICIENTS: A= +",
                       float, re" +1/SEC; B= +",
@@ -218,6 +216,53 @@ end
 
 # * CIS
 
+
+cis_state_machine = let
+    sym = re"[A-Z0-9]+"
+
+    sym.actions[:enter] = [:mark]
+    sym.actions[:exit] = [:sym]
+
+    cis_state = re.cat(re" *", re"EXCITED STATE", re" +",
+                       dec, re" +",
+                       re"ENERGY=", re" +",
+                       float, re" +",
+                       re"S =", re" +",
+                       float, re" +",
+                       re"SPACE SYM =", re" +",
+                       sym, re" *")
+
+    Automa.compile(cis_state)
+end
+
+cis_state_actions = Dict(
+    :mark => :(mark = p),
+    :sym => :(state = String(data[mark:p-1])),
+    :dec => :(),
+    :float => :(push!(values, parse(Float64, data[mark:p-1])))
+)
+
+context = Automa.CodeGenContext()
+@eval function read_cis_state(data::String)
+    state = ""
+    values = Vector{Float64}()
+    mark = 0
+
+    $(Automa.generate_init_code(context, cis_state_machine))
+
+    # p_end and p_eof were set to 0 and -1 in the init code,
+    # we need to set them to the end of input, i.e. the length of `data`.
+    p_end = p_eof = lastindex(data)
+
+    $(Automa.generate_exec_code(context, cis_state_machine, cis_state_actions))
+
+    # We need to make sure that we reached the accept state, else the
+    # input did not parse correctly
+    iszero(cs) || error("failed to parse on byte ", p)
+
+    state, values[1], values[2]
+end
+
 function read_cis_dipoles(io::IO)
     left = Vector{Int}()
     right = Vector{Int}()
@@ -243,11 +288,27 @@ function read_cis_dipoles(io::IO)
                 push!(left, parse(Int, le))
                 push!(right, parse(Int, ri))
             end
+        elseif occursin("EXPECTATION VALUE DIPOLE MOMENT FOR EXCITED STATE", l)
+            le = parse(Int, l[51:end])
+            push!(left, le)
+            push!(right, le)
+            push!(f, 0)
+            push!(A, 0)
+            push!(B, 0)
         elseif occursin("STATE MULTIPLICITIES", l)
             g_l,g_r = split(strip(split(l, "=")[2]))
             push!(g_left, parse(Int, g_l))
             push!(g_right, parse(Int, g_r))
+        elseif occursin("STATE MULTIPLICITY", l)
+            g = parse(Int, split(l, "=")[2])
+            push!(g_left, g)
+            push!(g_right, g)
         elseif occursin(r"TRANSITION DIPOLE =", l) && occursin(r"E\*BOHR", l)
+            values = read_dipole(l)
+            push!(x, values[1])
+            push!(y, values[2])
+            push!(z, values[3])
+        elseif occursin(r"STATE DIPOLE =", l) && occursin(r"E\*BOHR", l)
             values = read_dipole(l)
             push!(x, values[1])
             push!(y, values[2])
@@ -268,22 +329,22 @@ function read_cis_dipoles(io::IO)
 end
 
 function read_cis(io::IO)
-    read_until(io, "CI-SINGLES EXCITATION ENERGIES")
-    readline(io)
-    readline(io)
-
-    labels = Vector{String}()
+    states = Vector{String}()
     energies = Vector{Float64}()
+    Ss = Vector{Float64}()
 
-    read_until(io, isempty) do l
-        label,energy, = split(strip(l))
-        push!(labels, label)
-        push!(energies, parse(Float64, energy))
+    read_until(io, "CI-SINGLES EXCITATION ENERGIES") do l
+        if occursin("EXCITED STATE", l)
+            state, energy, S = read_cis_state(l)
+            push!(states, state)
+            push!(energies, energy)
+            push!(Ss, S)
+        end
     end
 
     length_gauge_dipole = read_cis_dipoles(io)
 
-    (excited_states=DataFrame(State = labels, Energy = energies),
+    (excited_states=DataFrame(State = states, Energy = energies, S=Ss),
      length_gauge_dipole=length_gauge_dipole)
 end
 
