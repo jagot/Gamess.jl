@@ -416,39 +416,34 @@ function read_guga_dipoles(io::IO, stop)
     A = Vector{Float64}()
     B = Vector{Float64}()
 
-    same = false
-
     read_until(io, stop) do l
         if occursin("CI STATE NUMBER=", l)
             le,ri = parse.(Int, split(split(l, "=", limit=2)[2])[1:2])
-            if le ≠ ri
-                push!(left, le)
-                push!(right, ri)
-                g_l,g_r = parse.(Int, split(rsplit(l, "=", limit=2)[2])[1:2])
-                push!(g_left, g_l)
-                push!(g_right, g_r)
-                same = false
-            else
-                same = true
+            same = le == ri
+            push!(left, le)
+            push!(right, ri)
+            g_l,g_r = parse.(Int, split(rsplit(l, "=", limit=2)[2])[1:2])
+            push!(g_left, g_l)
+            push!(g_right, g_r)
+            if le == ri
+                push!(f, 0.0)
+                push!(A, 0.0)
+                push!(B, 0.0)
             end
         elseif occursin(r"E.BOHR", l)
-            if !same
-                values = read_dipole(l)
-                push!(x, values[1])
-                push!(y, values[2])
-                push!(z, values[3])
-            end
+            values = read_dipole(l)
+            push!(x, values[1])
+            push!(y, values[2])
+            push!(z, values[3])
         elseif occursin("OSCILLATOR STRENGTH", l)
             # This is nuts; GUGA output has = as divider in the length
             # form and IS in the velocity form.
             divider = occursin("IS", l) ? "IS" : "="
-            same || push!(f, parse(Float64, strip(split(l, divider)[2])))
+            push!(f, parse(Float64, strip(split(l, divider)[2])))
         elseif occursin("EINSTEIN COEFFICIENTS", l)
-            if !same
-                values = read_einstein(l)
-                push!(A, values[1])
-                push!(B, values[2])
-            end
+            values = read_einstein(l)
+            push!(A, values[1])
+            push!(B, values[2])
         end
     end
 

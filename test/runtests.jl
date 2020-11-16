@@ -33,8 +33,8 @@ load_file(name) = Gamess.load(joinpath(dirname(@__FILE__), "data", "$(name).out"
         @test size(states) == (5,2)
 
         dipoles = ci.length_gauge_dipole
-        @test size(dipoles) == (10,10)
-        @test dipoles[8, :z] ≈ -0.521326
+        @test size(dipoles) == (15,10)
+        @test dipoles[11, :z] ≈ -0.521326
 
         dipoles = ci.velocity_gauge_dipole
         @test size(dipoles) == (10,8)
