@@ -7,6 +7,8 @@ const re = Automa.RegExp
 using DataFrames
 using LinearAlgebra
 
+using Formatting
+
 # https://physics.nist.gov/cgi-bin/cuu/Value?auedm
 const ea₀ = 8.4783536255e-30 # e*Bohr
 # https://en.wikipedia.org/wiki/Debye
@@ -220,6 +222,90 @@ context = Automa.CodeGenContext()
     values
 end
 
+# * Configurations
+
+struct Configuration{BA}
+    α::BA
+    β::BA
+end
+
+Base.copy(cfg::Configuration) = Configuration(copy(cfg.α), copy(cfg.β))
+
+function excite(cfg::Configuration, α, from, to)
+    cfg = copy(cfg)
+    v = α ? cfg.α : cfg.β
+    v[from] = false
+    v[to] = true
+    cfg
+end
+
+function find_ones(i::Integer)
+    os = Vector{Int}()
+    acc = 0
+    while !iszero(i)
+        k = trailing_zeros(i)
+        acc += k+1
+        push!(os, acc)
+        i >>= k+1
+    end
+    os
+end
+
+function find_indices(chunks::AbstractVector{I}) where {I<:Integer}
+    is = map(enumerate(chunks)) do (i,chunk)
+        find_ones(chunk) .+ (i-1)*8sizeof(I)
+    end
+    reduce(vcat, is)
+end
+
+function substitutions(a::BitArray, b::BitArray)
+    @assert size(a) == size(b)
+    changes = a.chunks .⊻ b.chunks
+    holes = changes .& a.chunks
+    particles = changes .& b.chunks
+    map(((h,p),) -> h => p,
+        zip(find_indices(holes),find_indices(particles)))
+end
+
+substitutions(a::Configuration, b::Configuration) =
+    substitutions(a.α, b.α), substitutions(a.β, b.β)
+
+function Base.show(io::IO, cfg::Configuration)
+    n = max(findlast(cfg.α),findlast(cfg.β))
+    for i = 1:n
+        print(io, cfg.α[i] ? "1" : ".")
+    end
+    print(io, "|")
+    for i = 1:n
+        print(io, cfg.β[i] ? "1" : ".")
+    end
+end
+
+struct Expansion{Configuration,Coefficient}
+    reference::Configuration
+    configurations::Vector{Configuration}
+    coefficients::Vector{Coefficient}
+end
+
+Expansion(reference::Configuration, ::Type{T}) where {Configuration,T} =
+    Expansion(reference, Vector{Configuration}(), Vector{T}())
+
+function Base.show(io::IO, e::Expansion)
+    n = length(e.configurations)
+    write(io, "$(n) determinant $(typeof(e))")
+end
+
+function Base.show(io::IO, ::MIME"text/plain", e::Expansion)
+    n = length(e.configurations)
+    println(io, "$(n) determinant $(typeof(e))")
+    for (c,cfg) in zip(e.coefficients, e.configurations)
+        α,β = substitutions(e.reference, cfg)
+        printfmtln(io, "{1:11.7f} α({2:s}) β({3:s})", c,
+                   join(string.(α), ", "),
+                   join(string.(β), ", "))
+    end
+end
+
 # * CIS
 
 
@@ -346,10 +432,11 @@ function read_cis_dipoles(io::IO, gst_mult)
               f=f, A=A, B=B)
 end
 
-function read_cis(io::IO, gst_mult)
+function read_cis(io::IO, gst_mult, reference::Configuration) where Configuration
     states = Vector{String}()
     energies = Vector{Float64}()
     Ss = Vector{Float64}()
+    exps = Vector{Expansion{Configuration,Float64}}()
 
     read_until(io, "CI-SINGLES EXCITATION ENERGIES") do l
         if occursin("EXCITED STATE", l)
@@ -357,13 +444,22 @@ function read_cis(io::IO, gst_mult)
             push!(states, state)
             push!(energies, energy)
             push!(Ss, S)
+            push!(exps, Expansion(reference, Float64))
+        end
+        if occursin("ALPHA", l) || occursin("BETA", l)
+            kind,from,to,coeff = split(l)
+            push!(exps[end].configurations,
+                  excite(reference, kind == "ALPHA" ,
+                         parse(Int, from), parse(Int, to)))
+            push!(exps[end].coefficients, parse(Float64, coeff))
         end
     end
 
     length_gauge_dipole = read_cis_dipoles(io, gst_mult)
 
     (excited_states=DataFrame(State = states, Energy = energies, S=Ss),
-     length_gauge_dipole=length_gauge_dipole)
+     length_gauge_dipole=length_gauge_dipole,
+     state_expansions=exps)
 end
 
 # * GUGA
@@ -482,6 +578,17 @@ function read_guga(io::IO)
      velocity_gauge_dipole=velocity_gauge_dipole)
 end
 
+# * Orbital information
+
+function read_orbital_info(io::IO)
+    read_until(io, "SPIN MULTIPLICITY")
+    nα = parse(Int, split(readline(io), "=")[2])
+    nβ = parse(Int, split(readline(io), "=")[2])
+    read_until(io, "DEPENDENT MOS DROPPED")
+    norb = parse(Int, split(readline(io), "=")[2])
+    nα, nβ, norb
+end
+
 # * Energies
 
 function read_energies(io::IO)
@@ -499,11 +606,11 @@ end
 
 # * Interface
 
-function read_ci(io::IO, CONTRL)
+function read_ci(io::IO, CONTRL, reference)
     ci_type = CONTRL.CITYP
     if ci_type == "CIS"
         mult = :MULT in keys(CONTRL) ? parse(Int, CONTRL.MULT) : 1
-        read_cis(io, mult)
+        read_cis(io, mult, reference)
     elseif ci_type == "GUGA"
         read_guga(io)
     else
@@ -518,6 +625,14 @@ function load(io::IO)
     isnothing(title) && throw(ArgumentError("Could not extract run title from $(io)"))
     molecule = read_molecule(io)
 
+    nα, nβ, norb = read_orbital_info(io)
+
+    α = falses(norb)
+    α[1:nα] .= true
+    β = falses(norb)
+    β[1:nβ] .= true
+    reference = Configuration(α, β)
+
     data = (title=title,
             input=input,
             molecule=molecule)
@@ -527,7 +642,7 @@ function load(io::IO)
     end
 
     if :CITYP in keys(input.CONTRL)
-        data = merge(data, (ci=read_ci(io, input.CONTRL),))
+        data = merge(data, (ci=read_ci(io, input.CONTRL, reference),))
     end
 
     data
