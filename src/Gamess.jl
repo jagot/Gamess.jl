@@ -227,9 +227,17 @@ end
 struct Configuration{BA}
     α::BA
     β::BA
+
+    function Configuration(α::BA, β::BA) where BA
+        length(α) == length(β) || throw(DimensionMismatch("α and β strings must have the same length"))
+        new{BA}(α, β)
+    end
 end
 
 Base.copy(cfg::Configuration) = Configuration(copy(cfg.α), copy(cfg.β))
+
+Base.:(==)(a::Configuration, b::Configuration) =
+    a.α == b.α && a.β == b.β
 
 function excite(cfg::Configuration, α, from, to)
     cfg = copy(cfg)
@@ -271,6 +279,7 @@ substitutions(a::Configuration, b::Configuration) =
     substitutions(a.α, b.α), substitutions(a.β, b.β)
 
 function Base.show(io::IO, cfg::Configuration)
+    write(io, "#$(length(cfg.α)): ")
     n = max(findlast(cfg.α),findlast(cfg.β))
     for i = 1:n
         print(io, cfg.α[i] ? "1" : ".")
@@ -581,11 +590,21 @@ end
 # * Orbital information
 
 function read_orbital_info(io::IO)
+    read_until(io, "TOTAL NUMBER OF BASIS SET SHELLS")
+    norb = parse(Int, split(readline(io), "=")[2])
+    drop = false
+    read_until(io, "NUMBER OF ELECTRONS") do l
+        if occursin("THE NUMBER OF ORBITALS KEPT IN THE VARIATIONAL SPACE WILL BE PRINTED LATER.", l)
+            drop = true
+        end
+    end
     read_until(io, "SPIN MULTIPLICITY")
     nα = parse(Int, split(readline(io), "=")[2])
     nβ = parse(Int, split(readline(io), "=")[2])
-    read_until(io, "DEPENDENT MOS DROPPED")
-    norb = parse(Int, split(readline(io), "=")[2])
+    if drop
+        read_until(io, "DEPENDENT MOS DROPPED")
+        norb = parse(Int, split(readline(io), "=")[2])
+    end
     nα, nβ, norb
 end
 
